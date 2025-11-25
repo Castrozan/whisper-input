@@ -27,12 +27,16 @@
                 buildPythonPackage
                   rec {
                     pname = "beepy";
-                    version = "1.0.7";
+                    version = "1.0.9";
                     src = fetchPypi {
                       inherit pname version;
-                      sha256 = "sha256-gXNI/zzAmKyo0d57wVKSt2L94g/MCgIPzOp5NpQNW18=";
+                      sha256 = "sha256-BbLWeJq7Q5MAaeHZalbJ6LBJg3jgl4TP6aHewCNo/Ks=";
                     };
                     doCheck = false;
+                    # Fix for missing README.md in source distribution
+                    prePatch = ''
+                      touch README.md
+                    '';
                     propagatedBuildInputs = [
                       ps.simpleaudio
                     ];
