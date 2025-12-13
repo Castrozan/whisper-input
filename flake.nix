@@ -20,7 +20,7 @@
           inherit system;
         };
         myPython = (
-          pkgs.python310.withPackages (
+          pkgs.python311.withPackages (
             ps: with ps; [
               openai-whisper
               pyaudio
@@ -33,6 +33,7 @@
               (buildPythonPackage rec {
                 pname = "beepy";
                 version = "1.0.9";
+                format = "setuptools";
                 src = fetchPypi {
                   inherit pname version;
                   sha256 = "sha256-BbLWeJq7Q5MAaeHZalbJ6LBJg3jgl4TP6aHewCNo/Ks=";
