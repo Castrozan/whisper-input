@@ -11,16 +11,40 @@
       self,
       nixpkgs,
       flake-utils,
-      ...
-    }@inputs:
+    }:
     flake-utils.lib.eachDefaultSystem (
       system:
       let
         pkgs = import nixpkgs {
           inherit system;
+          config = {
+            # Disable tests for Python packages to prevent resource-intensive builds
+            # This is especially important for heavy packages like PyTorch
+            doCheckByDefault = false;
+          };
+        };
+        # Override Python to disable tests for heavy packages
+        # This prevents resource-intensive test suites (especially PyTorch) from running
+        python311NoTests = pkgs.python311.override {
+          packageOverrides = python-final: python-prev: {
+            # Disable tests for the heaviest packages
+            torch = python-prev.torch.overridePythonAttrs (old: {
+              doCheck = false;
+            });
+            openai-whisper = python-prev.openai-whisper.overridePythonAttrs (old: {
+              doCheck = false;
+            });
+            # Disable tests for other potentially heavy packages
+            numpy = python-prev.numpy.overridePythonAttrs (old: {
+              doCheck = false;
+            });
+            scipy = python-prev.scipy.overridePythonAttrs (old: {
+              doCheck = false;
+            });
+          };
         };
         myPython = (
-          pkgs.python311.withPackages (
+          python311NoTests.withPackages (
             ps: with ps; [
               openai-whisper
               pyaudio
@@ -55,9 +79,33 @@
           pkgs.alsa-plugins
           pkgs.pulseaudio
         ];
+        defaultPackage = pkgs.stdenv.mkDerivation {
+          name = "whisper-input";
+          buildInputs = dependencies;
+          src = ./src;
+          dontBuild = true;
+          installPhase = ''
+            mkdir -p $out/bin
+            cp -r . $out
+            # add a `whisper-input` script, which just calls `python3 whisper-input.py`
+            # Set ALSA_PLUGIN_DIR and LD_LIBRARY_PATH so ALSA can find the PulseAudio plugins
+            cat > $out/bin/whisper-input <<EOF
+#!${pkgs.stdenv.shell}
+export ALSA_PLUGIN_DIR="${pkgs.alsa-plugins}/lib/alsa-lib"
+export LD_LIBRARY_PATH="${pkgs.alsa-plugins}/lib:${pkgs.pulseaudio}/lib:\''${LD_LIBRARY_PATH:-}"
+${myPython}/bin/python3 $out/whisper-input.py "\$@"
+EOF
+            chmod +x $out/bin/whisper-input
+          '';
+        };
       in
-      rec {
-        defaultApp = apps.whisper-input;
+      {
+        packages.default = defaultPackage;
+
+        apps.default = {
+          type = "app";
+          program = "${defaultPackage}/bin/whisper-input";
+        };
 
         apps.whisper-input = {
           type = "app";
@@ -65,27 +113,7 @@
         };
 
         devShells.default = pkgs.mkShell {
-          buildInputs = [ dependencies ];
-        };
-
-        defaultPackage = pkgs.stdenv.mkDerivation {
-          name = "defaultPackage";
           buildInputs = dependencies;
-          src = ./src;
-          dontBuild = true;
-          installPhase = ''
-                        mkdir -p $out/bin
-                        cp -r . $out
-                        # add a `whisper-input` script, which just calls `python3 whisper-input.py`
-                        # Set ALSA_PLUGIN_DIR and LD_LIBRARY_PATH so ALSA can find the PulseAudio plugins
-                        cat > $out/bin/whisper-input <<EOF
-            #!${pkgs.stdenv.shell}
-            export ALSA_PLUGIN_DIR="${pkgs.alsa-plugins}/lib/alsa-lib"
-            export LD_LIBRARY_PATH="${pkgs.alsa-plugins}/lib:${pkgs.pulseaudio}/lib:\''${LD_LIBRARY_PATH:-}"
-            ${myPython}/bin/python3 $out/whisper-input.py "\$@"
-            EOF
-                        chmod +x $out/bin/whisper-input
-          '';
         };
       }
     );
