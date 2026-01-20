@@ -17,16 +17,49 @@ def play_beep(sound_type, beep_enabled):
     if beep_enabled:
         beepy.beep(sound_type)
 
-def record_speech(silence_threshold=500, silence_duration=10, max_duration=600, beep_enabled=True):
+def calibrate_mic(duration=1.0, multiplier=2.0):
+    """
+    Calibrate silence threshold by sampling ambient noise.
+    Returns a threshold slightly above ambient noise level.
+    """
+    audio = pyaudio.PyAudio()
+    stream = audio.open(format=pyaudio.paInt16, channels=1, rate=44100, input=True, frames_per_buffer=1024)
+
+    samples = []
+    chunks = int(44100 / 1024 * duration)
+
+    for _ in range(chunks):
+        try:
+            data = stream.read(1024, exception_on_overflow=False)
+            rms = audioop.rms(data, 2)
+            samples.append(rms)
+        except Exception:
+            pass
+
+    stream.stop_stream()
+    stream.close()
+    audio.terminate()
+
+    if samples:
+        avg_noise = sum(samples) / len(samples)
+        threshold = max(int(avg_noise * multiplier), 100)  # minimum 100 to avoid false triggers
+        return threshold
+    return 300  # fallback default
+
+def record_speech(silence_threshold=None, silence_duration=10, max_duration=600, beep_enabled=True):
     """
     Record speech until silence is detected or max_duration is reached.
-    
+
     Args:
-        silence_threshold: RMS threshold for detecting sound (default: 500)
+        silence_threshold: RMS threshold for detecting sound (auto-calibrated if None)
         silence_duration: Seconds of silence before stopping (default: 10)
         max_duration: Maximum recording duration in seconds (default: 600 = 10 minutes)
         beep_enabled: Whether to play beep sounds
     """
+    if silence_threshold is None:
+        silence_threshold = calibrate_mic()
+        print(colored(f'Auto-calibrated silence threshold: {silence_threshold}', 'cyan'), file=sys.stderr)
+
     icon = os.path.join(os.path.dirname(__file__), 'icons', 'speaking.png')
     notification.notify(title="Speech-to-Text", message="Start Speaking...", app_icon=icon, app_name="Speech-to-Text")
 
@@ -114,34 +147,37 @@ def copy_to_clipboard(text):
 def type_text(text):
     """
     Type text using the most reliable method available.
-    Detects Wayland vs X11 and uses appropriate tools.
-    Always copies to clipboard as fallback.
+    Tries multiple tools with fallbacks for maximum compatibility.
+    Always copies to clipboard first.
     """
     if not text or not text.strip():
         return
 
     copied = copy_to_clipboard(text)
 
-    if is_wayland():
-        if shutil.which('wtype'):
-            try:
-                subprocess.run(['wtype', text], check=True, timeout=30)
-                return
-            except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
-                pass
-        if shutil.which('ydotool'):
-            try:
-                subprocess.run(['ydotool', 'type', '--', text], check=True, timeout=30)
-                return
-            except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
-                pass
-    else:
-        if shutil.which('xdotool'):
-            try:
-                subprocess.run(['xdotool', 'type', '--clearmodifiers', text], check=True, timeout=30)
-                return
-            except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
-                pass
+    # Try wtype first (native Wayland)
+    if is_wayland() and shutil.which('wtype'):
+        try:
+            subprocess.run(['wtype', text], check=True, timeout=30)
+            return
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            pass
+
+    # Try xdotool (works on X11 and XWayland apps like VSCode)
+    if shutil.which('xdotool'):
+        try:
+            subprocess.run(['xdotool', 'type', '--clearmodifiers', text], check=True, timeout=30)
+            return
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            pass
+
+    # Try ydotool as last resort (uses uinput, works everywhere but needs setup)
+    if shutil.which('ydotool'):
+        try:
+            subprocess.run(['ydotool', 'type', '--', text], check=True, timeout=30)
+            return
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            pass
 
     if copied:
         print(colored('Text copied to clipboard (paste manually with Ctrl+V)', 'yellow'), file=sys.stderr)
@@ -151,6 +187,7 @@ def type_text(text):
 # Argument parsing
 parser = argparse.ArgumentParser(description="Speech-to-Text with Silence Threshold")
 parser.add_argument("--silence_duration", type=int, default=5, help="Duration of silence before stopping recording (in seconds)")
+parser.add_argument("--silence_threshold", type=int, default=None, help="RMS threshold for silence detection (auto-calibrated if not set)")
 parser.add_argument("--max_duration", type=int, default=600, help="Maximum recording duration in seconds (default: 600 = 10 minutes)")
 parser.add_argument("--beep", action='store_true', help="Enable beep sound at start and end")
 args = parser.parse_args()
@@ -164,7 +201,12 @@ if args.silence_duration == 5:
 play_beep(sound_type=1, beep_enabled=args.beep)
 
 # Step 2 and 3: Record and transcribe speech
-speech_file = record_speech(silence_duration=args.silence_duration, max_duration=args.max_duration, beep_enabled=args.beep)
+speech_file = record_speech(
+    silence_threshold=args.silence_threshold,
+    silence_duration=args.silence_duration,
+    max_duration=args.max_duration,
+    beep_enabled=args.beep
+)
 transcribed_text = transcribe_speech(speech_file, beep_enabled=args.beep)
 
 # Step 4: Type the text
