@@ -6,7 +6,6 @@ import time
 import subprocess
 import shutil
 import sys
-from pynput.keyboard import Key, Controller
 from plyer import notification
 import argparse
 from termcolor import colored
@@ -93,46 +92,61 @@ def transcribe_speech(file_path, beep_enabled=True):
     result = model.transcribe(file_path)
     return result["text"]
 
+def is_wayland():
+    return os.environ.get('XDG_SESSION_TYPE') == 'wayland' or os.environ.get('WAYLAND_DISPLAY')
+
+def copy_to_clipboard(text):
+    if is_wayland() and shutil.which('wl-copy'):
+        try:
+            subprocess.run(['wl-copy', text], check=True, timeout=5)
+            return True
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            pass
+    if shutil.which('xclip'):
+        try:
+            proc = subprocess.Popen(['xclip', '-selection', 'clipboard'], stdin=subprocess.PIPE)
+            proc.communicate(text.encode('utf-8'), timeout=5)
+            return proc.returncode == 0
+        except (subprocess.TimeoutExpired, Exception):
+            pass
+    return False
+
 def type_text(text):
     """
     Type text using the most reliable method available.
-    On Linux, xdotool is more reliable than pynput for many applications.
-    Falls back to pynput if xdotool is not available.
+    Detects Wayland vs X11 and uses appropriate tools.
+    Always copies to clipboard as fallback.
     """
     if not text or not text.strip():
         return
-    
-    # Try xdotool first (more reliable on Linux for terminals/browsers)
-    xdotool_path = shutil.which('xdotool')
-    if xdotool_path:
-        try:
-            # xdotool type is more reliable for terminals and browsers
-            subprocess.run([xdotool_path, 'type', '--clearmodifiers', text], 
-                         check=True, timeout=30)
-            return
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
-            # Fall through to pynput if xdotool fails
-            pass
-    
-    # Fallback to pynput
-    try:
-        # Add a small delay to ensure the target window is ready
-        time.sleep(0.1)
-        keyboard = Controller()
-        keyboard.type(text)
-    except Exception as e:
-        print(f"Error typing text: {e}", file=sys.stderr)
-        # Last resort: try to use xsel/xclip to put text in clipboard
-        # User can paste manually
-        try:
-            xsel_path = shutil.which('xsel') or shutil.which('xclip')
-            if xsel_path:
-                proc = subprocess.Popen([xsel_path, '-i'], stdin=subprocess.PIPE, 
-                                      stderr=subprocess.DEVNULL)
-                proc.communicate(input=text.encode('utf-8'), timeout=5)
-                print("Text copied to clipboard (paste manually with Ctrl+V)", file=sys.stderr)
-        except Exception:
-            pass
+
+    copied = copy_to_clipboard(text)
+
+    if is_wayland():
+        if shutil.which('wtype'):
+            try:
+                subprocess.run(['wtype', text], check=True, timeout=30)
+                return
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+                pass
+        if shutil.which('ydotool'):
+            try:
+                subprocess.run(['ydotool', 'type', '--', text], check=True, timeout=30)
+                return
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+                pass
+    else:
+        if shutil.which('xdotool'):
+            try:
+                subprocess.run(['xdotool', 'type', '--clearmodifiers', text], check=True, timeout=30)
+                return
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+                pass
+
+    if copied:
+        print(colored('Text copied to clipboard (paste manually with Ctrl+V)', 'yellow'), file=sys.stderr)
+    else:
+        print(colored('Could not type or copy text. Install wtype (Wayland) or xdotool (X11)', 'red'), file=sys.stderr)
 
 # Argument parsing
 parser = argparse.ArgumentParser(description="Speech-to-Text with Silence Threshold")
