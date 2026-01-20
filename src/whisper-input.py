@@ -17,10 +17,10 @@ def play_beep(sound_type, beep_enabled):
     if beep_enabled:
         beepy.beep(sound_type)
 
-def calibrate_mic(duration=1.0, multiplier=2.0):
+def calibrate_mic(duration=1.5):
     """
     Calibrate silence threshold by sampling ambient noise.
-    Returns a threshold slightly above ambient noise level.
+    Uses 95th percentile of noise and a high multiplier for reliable speech detection.
     """
     audio = pyaudio.PyAudio()
     stream = audio.open(format=pyaudio.paInt16, channels=1, rate=44100, input=True, frames_per_buffer=1024)
@@ -41,10 +41,14 @@ def calibrate_mic(duration=1.0, multiplier=2.0):
     audio.terminate()
 
     if samples:
-        avg_noise = sum(samples) / len(samples)
-        threshold = max(int(avg_noise * multiplier), 100)  # minimum 100 to avoid false triggers
+        samples.sort()
+        # Use 95th percentile to ignore noise spikes
+        p95_idx = int(len(samples) * 0.95)
+        noise_floor = samples[p95_idx] if p95_idx < len(samples) else samples[-1]
+        # Threshold = 5x noise floor, clamped between 300 and 3000
+        threshold = max(300, min(3000, int(noise_floor * 5)))
         return threshold
-    return 300  # fallback default
+    return 500  # fallback default
 
 def record_speech(silence_threshold=None, silence_duration=10, max_duration=600, beep_enabled=True):
     """
@@ -76,9 +80,10 @@ def record_speech(silence_threshold=None, silence_duration=10, max_duration=600,
     wf.setframerate(44100)
 
     frames = []
-    last_sound_time = time.time()
+    last_sound_time = None  # Will be set when speech is first detected
     start_time = time.time()
     chunk_write_interval = 100  # Write to file every N frames to save memory
+    speech_started = False
 
     try:
         while True:
@@ -88,11 +93,15 @@ def record_speech(silence_threshold=None, silence_duration=10, max_duration=600,
             # Check volume
             rms = audioop.rms(data, 2)
             if rms > silence_threshold:
+                if not speech_started:
+                    speech_started = True
+                    print(colored('Speech detected, recording...', 'green'), file=sys.stderr)
                 last_sound_time = time.time()
 
-            # Check if silence duration is reached
-            if (time.time() - last_sound_time) > silence_duration:
-                break
+            # Check if silence duration is reached (only after speech started)
+            if speech_started and last_sound_time:
+                if (time.time() - last_sound_time) > silence_duration:
+                    break
 
             # Check if max duration is reached
             elapsed = time.time() - start_time
