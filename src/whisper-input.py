@@ -165,17 +165,35 @@ def type_text(text):
     copied = copy_to_clipboard(text)
 
     # Try wtype first (native Wayland)
-    if is_wayland() and shutil.which('wtype'):
-        try:
-            subprocess.run(['wtype', text], check=True, timeout=30)
-            return
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
-            pass
+    # Use wl-copy + wtype paste for reliability — wtype direct typing can
+    # drop spaces in some apps (terminals, Electron apps on XWayland)
+    if is_wayland():
+        wtype_path = shutil.which('wtype')
+        wl_copy_path = shutil.which('wl-copy')
+
+        # Preferred: clipboard paste (most reliable, preserves all whitespace)
+        if copied and wtype_path:
+            try:
+                time.sleep(0.05)
+                subprocess.run([wtype_path, '-M', 'ctrl', 'v', '-m', 'ctrl'],
+                             check=True, timeout=10)
+                return
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+                pass
+
+        # Fallback: wtype direct with delay between keystrokes
+        if wtype_path:
+            try:
+                subprocess.run([wtype_path, '-d', '1', text], check=True, timeout=30)
+                return
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+                pass
 
     # Try xdotool (works on X11 and XWayland apps like VSCode)
     if shutil.which('xdotool'):
         try:
-            subprocess.run(['xdotool', 'type', '--clearmodifiers', text], check=True, timeout=30)
+            subprocess.run(['xdotool', 'type', '--clearmodifiers', '--delay', '1', text],
+                         check=True, timeout=30)
             return
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
             pass
